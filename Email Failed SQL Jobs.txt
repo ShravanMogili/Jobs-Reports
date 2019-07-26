@@ -1,0 +1,57 @@
+Email Failed SQL Jobs
+
+http://www.sqlservercentral.com/scripts/110084/
+
+ This code will check for any SQL jobs on your instance which failed and email the details to your specified account. This required a mail profile called DBA alerts (which can obviously be changed). I have put this code into a Job and scheduled it to run at various points throughout the day.
+
+This will save you from going to each job on every sql instance and enabling it is email once failed. As a DBA who has inherited lots of new servers, this has been a time saving solution.
+
+
+create table #TempJobs (
+[Job Name] nvarchar(150),
+[last_run_outcome] nvarchar(10),
+[last_outcome_message] nvarchar(max),
+[last_run_date] nvarchar(20) )
+
+insert into #TempJobs
+
+select sysjobs.name as [Job Name], sysjobservers.Last_run_outcome, sysjobservers.last_outcome_message, sysjobservers.last_run_date --sysjobschedules.next_run_date
+from sysjobs
+inner join sysjobservers on sysjobservers.job_id = sysjobs.job_id
+where last_outcome_message like '%failed%'
+
+if exists (select * from #TempJobs)
+begin
+
+DECLARE @xml NVARCHAR(MAX)
+DECLARE @body NVARCHAR(MAX)
+
+SET @xml = CAST(( SELECT [Job Name] AS 'td','',[last_run_outcome] AS 'td','',
+       [last_outcome_message] AS 'td','', [last_run_date] AS 'td'
+FROM  #TempJobs ORDER BY [Job Name]
+FOR XML PATH('tr'), ELEMENTS ) AS NVARCHAR(MAX))
+
+SET @body ='<html><body><H3>Failed jobs</H3>
+<table border = 1> 
+<tr>
+<th> Job Name </th> <th> Last Run Outcome </th> <th> Last Outcome Message </th> <th> Last Run Date </th></tr>'    
+ 
+SET @body = @body + @xml +'</table></body></html>'
+
+declare @subjectserver nvarchar(100)
+select @SubjectServer = (select @@servername)
+EXEC msdb.dbo.sp_send_dbmail	       
+                                        @profile_name = 'DBA Alerts',
+									    @recipients = 'EMAIL@Company.com,
+										@subject = @subjectserver,
+										@Body = @body,
+									    @body_format = HTML
+
+
+drop table #tempJobs
+ENd
+
+begin
+if OBJECT_ID('tempdb..#tempjobs') is not null
+drop table #tempJobs
+end

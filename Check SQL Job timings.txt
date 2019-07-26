@@ -1,0 +1,18 @@
+Use msdb 
+go
+SELECT name, 
+   step_id 
+  ,run_date 
+  ,count(*) howMany
+  ,min((run_duration/10000*3600 + (run_duration/100)%100*60 + run_duration%100 + 31 ) / 60) lowest_Min 
+  ,avg((run_duration/10000*3600 + (run_duration/100)%100*60 + run_duration%100 + 31 ) / 60) average_Min 
+  ,max((run_duration/10000*3600 + (run_duration/100)%100*60 + run_duration%100 + 31 ) / 60) highest_Min 
+  ,stdev((run_duration/10000*3600 + (run_duration/100)%100*60 + run_duration%100 + 31 ) / 60) stdev_Min 
+ from sysJobHistory h 
+inner join sysjobs j  on 
+(h.job_id = j.job_id) 
+where name =''
+group by name, step_id, run_date 
+order by run_date desc
+
+

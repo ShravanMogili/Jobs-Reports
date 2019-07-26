@@ -1,0 +1,26 @@
+select  database_name, Job, Name, Type_Desc,
+1 as Has_Dep
+ from
+(
+Select a.database_name,
+a.name Job,
+b.name,
+b.type_Desc,
+charindex(b.name,a.command)as Has_Dep
+from
+(select js.database_name,
+j.name,
+js.command
+from 
+msdb..sysjobs j
+inner join msdb..sysjobsteps js
+on j.job_id = js.job_id
+and js.database_name = DB_NAME()
+)a
+ ,(select name,
+ type_desc 
+ from sys.objects
+ where type IN ('V','U','S','FN')
+ )b)z 
+ where Has_Dep > 0
+ order by 1,3,2

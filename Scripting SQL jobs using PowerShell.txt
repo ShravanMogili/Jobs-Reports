@@ -1,0 +1,43 @@
+Scripting SQL jobs using PowerShell
+
+ This powershell script can be used to generate scripts for sql jobs with different filenames.
+
+I have customised this script in such a way that it will not script any "Replication" or "logshipping" category Jobs.
+
+You can modify the script as per your requirement.
+
+--------------------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------------------
+
+Step 1) Create a folder in your C drive as "test"
+
+Step 2) Save the script with extension PS1. as "job_script"
+
+Step 3) Pass the "instance name" as the parameter. This will create the scripts for the specified instance name. 
+
+
+
+
+
+param($sqlserver)
+
+[System.Reflection.Assembly]::LoadWithPartialName('Microsoft.SqlServer.Smo') | Out-Null
+
+$srv = New-Object ('Microsoft.SqlServer.Management.Smo.Server') $sqlserver
+
+$jobs = $srv.JobServer.Jobs | Where-Object {$_.category -notlike "*repl*" -and $_.category -notlike "*shipping*" -and $_.category -notlike "*Maintenance*" } 
+
+
+ForEach ( $job in $jobs )
+????{
+????????$jobname = "c:\test\" + $job.Name.replace(" ","_").replace("\","_").replace("[","_").replace("]","_").replace(".","_").replace(":","_").replace("*","_") + ".sql"
+????????$job.Script() | Out-File $jobname
+????}
+
+
+
+
+
+
+

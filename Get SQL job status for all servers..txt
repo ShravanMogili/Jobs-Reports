@@ -1,0 +1,165 @@
+Get SQL job status for all servers. --> http://www.sqlservercentral.com/scripts/Maintenance+and+Management/31790/
+
+Below script will Get SQL job status for all servers running on the same network. 
+
+All you have to do is create a linked server with msdb on local machine. 
+
+Executing this script will give you all job status on any number of servers. 
+
+Good for an environment where a DBA had to see job status on 15 - 20 servers daily. 
+
+
+
+
+/****************************************************************************************************************/
+-- Create table first
+CREATE TABLE [dbo].[SSJobsReport] (
+	[SerID] [int] IDENTITY (1, 1) NOT NULL ,
+	[server] [varchar] (40) COLLATE SQL_Latin1_General_CP1_CI_AS NULL ,
+	[jobname] [varchar] (129) COLLATE SQL_Latin1_General_CP1_CI_AS NULL ,
+	[status] [varchar] (15) COLLATE SQL_Latin1_General_CP1_CI_AS NULL ,
+	[rundate] [varchar] (18) COLLATE SQL_Latin1_General_CP1_CI_AS NULL ,
+	[runtime] [char] (18) COLLATE SQL_Latin1_General_CP1_CI_AS NULL ,
+	[runduration] [char] (18) COLLATE SQL_Latin1_General_CP1_CI_AS NULL ,
+	[Jmessage] [nvarchar] (1024) COLLATE SQL_Latin1_General_CP1_CI_AS NULL 
+) ON [PRIMARY]
+GO
+/****************************************************************************************************************/
+
+/************************************************************************************************************************************/
+--<Linked server name> - Server1
+-- For each server you have to create below script.  For each server create a linked server.
+-- You can query what type of information you want from syshobhistory using run_status in where clause
+-- Transfer data from SSJobsReport table into a text file and send mail using XP_SENDMAIL or sp_smtp_sendmail
+-- all mail recipients.
+/************************************************************************************************************************************/
+
+CREATE  PROCEDURE usp_SSJobsReport
+AS
+SET NOCOUNT ON
+
+--Local Server
+INSERT INTO SSJobsReport (server, jobname, status, rundate, runtime, runduration)
+SELECT sj.originating_server, sj.name,
+
+--Status
+CASE sjh.run_status
+	WHEN 0 THEN 'Failed'
+	WHEN 1 THEN 'Succeeded'
+	WHEN 2 THEN 'Retry'
+	WHEN 3 THEN 'Canceled'
+	ELSE 'Unknown'
+END, 
+
+--Convert Integer date to regular datetime
+SUBSTRING(CAST(sjh.run_date AS CHAR(8)),5,2) + '/' + 
+RIGHT(CAST(sjh.run_date AS CHAR(8)),2) + '/' + 
+LEFT(CAST(sjh.run_date AS CHAR(8)),4)
+
+--Change run time into something you can recognize (hh:mm:ss)
+, LEFT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2) + ':' + 
+ SUBSTRING(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),3,2) + ':' + 
+ RIGHT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2)
+
+--Change run duration into something you can recognize (hh:mm:ss)
+, LEFT(RIGHT('000000' + CAST(run_duration AS VARCHAR(10)),6),2) + ':' + 
+ SUBSTRING(RIGHT('000000' + CAST(run_duration AS VARCHAR(10)),6),3,2) + ':' + 
+ RIGHT(RIGHT('000000' + CAST(run_duration AS VARCHAR(10)),6),2)
+
+FROM msdb.dbo.sysjobs sj --job id and name
+
+--Job history
+INNER JOIN msdb.dbo.sysjobhistory sjh
+ON sj.job_id = sjh.job_id
+
+--Join for new history rows
+left JOIN msdb.dbo.SSJobsReport sjr
+ON sj.originating_server = sjr.server
+AND sj.name = sjr.jobname
+AND SUBSTRING(CAST(sjh.run_date AS CHAR(8)),5,2) + '/' + 
+RIGHT(CAST(sjh.run_date AS CHAR(8)),2) + '/' + 
+LEFT(CAST(sjh.run_date AS CHAR(8)),4) = sjr.rundate
+AND LEFT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2) + ':' + 
+ SUBSTRING(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),3,2) + ':' + 
+ RIGHT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2) = sjr.runtime
+
+--Only enabled jobs
+WHERE sj.enabled = 1
+--Only job outcome not each step outcome
+AND sjh.step_id = 0
+--Only completed jobs
+AND sjh.run_status <> 4
+--Only new data
+--AND sjr.jNo IS NULL
+
+--Latest date first
+
+ORDER BY sjh.run_date DESC
+/************************************************************************************************************************************/
+--<Linked server name> - Server1
+/************************************************************************************************************************************/
+
+INSERT INTO SSJobsReport (server, jobname, status, rundate, runtime, runduration)
+SELECT sj.originating_server, sj.name,
+
+--Status
+CASE sjh.run_status
+	WHEN 0 THEN 'Failed'
+	WHEN 1 THEN 'Succeeded'
+	WHEN 2 THEN 'Retry'
+	WHEN 3 THEN 'Canceled'
+	ELSE 'Unknown'
+END, 
+
+--Convert Integer date to regular datetime
+SUBSTRING(CAST(sjh.run_date AS CHAR(8)),5,2) + '/' + 
+RIGHT(CAST(sjh.run_date AS CHAR(8)),2) + '/' + 
+LEFT(CAST(sjh.run_date AS CHAR(8)),4)
+
+--Change run time into something you can recognize (hh:mm:ss)
+, LEFT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2) + ':' + 
+ SUBSTRING(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),3,2) + ':' + 
+ RIGHT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2)
+
+--Change run duration into something you can recognize (hh:mm:ss)
+, LEFT(RIGHT('000000' + CAST(run_duration AS VARCHAR(10)),6),2) + ':' + 
+ SUBSTRING(RIGHT('000000' + CAST(run_duration AS VARCHAR(10)),6),3,2) + ':' + 
+ RIGHT(RIGHT('000000' + CAST(run_duration AS VARCHAR(10)),6),2)
+
+FROM <Linked server name>.msdb.dbo.sysjobs sj --job id and name
+
+--Job history
+INNER JOIN <Linked server name>.msdb.dbo.sysjobhistory sjh
+ON sj.job_id = sjh.job_id
+
+--Join for new history rows
+left JOIN msdb.dbo.SSJobsReport sjr
+ON sj.originating_server = sjr.server
+AND sj.name = sjr.jobname
+AND SUBSTRING(CAST(sjh.run_date AS CHAR(8)),5,2) + '/' + 
+RIGHT(CAST(sjh.run_date AS CHAR(8)),2) + '/' + 
+LEFT(CAST(sjh.run_date AS CHAR(8)),4) = sjr.rundate
+AND LEFT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2) + ':' + 
+ SUBSTRING(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),3,2) + ':' + 
+ RIGHT(RIGHT('000000' + CAST(run_time AS VARCHAR(10)),6),2) = sjr.runtime
+
+--Only enabled jobs
+WHERE sj.enabled = 1
+--Only job outcome not each step outcome
+AND sjh.step_id = 0
+--Only completed jobs
+AND sjh.run_status <> 4
+--Only new data
+--AND sjr.jNo IS NULL
+
+--Latest date first
+ORDER BY sjh.run_date DESC
+
+GO
+SET QUOTED_IDENTIFIER OFF 
+GO
+SET ANSI_NULLS ON 
+GO
+
+
+

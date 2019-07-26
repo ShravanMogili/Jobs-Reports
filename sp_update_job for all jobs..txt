@@ -1,0 +1,127 @@
+
+sp_update_job for all jobs.
+
+This script will generate a sp_update_job statement for every job on the server. In order to use it, populate the appropriate paramaters in the "Populate the Variables" section and execute the script. If testing is set to 1, it will generate the appropriate commands, but display instead of executing them. If testing is set to 0, it will execute the commands
+
+This may be useful in cases such as:
+1. A server which has never had a configured operator needs to be configured with an operator and on failure notifications need to be set for every single job. (This happens to be why it was written)
+2. Paging ability is added to a server which did not have it before
+3. A new policy is created which specifies that all jobs will be owned by a single account, such as a designated service account.
+4. All jobs need to be temporarily disabled without actually turning the agent entirely off (or reenabled when they are all off)
+
+
+/* 
+Created by Timothy A Wiseman
+24 AUG 08
+
+This script will generate a sp_update_job statement for every job on the server.  This may be useful in cases such as:
+1. A server which has never had a configured operator needs to be configured with an operator and on failure notifications
+need to be set for every single job.  (This happens to be why it was written)
+2. Paging ability is added to a server which did not have it before 
+3. A new policy is created which specifies that all jobs will be owned by a single account, such as a designated service account.
+4. All jobs need to be temporarily disabled without actually turning the agent entirely off (or reenabled when they are all off) 
+
+In short, there are relatively few times when a change needs to be made to all jobs on a server, but when it occurs it is
+much better to have on script to do it all than to make the changes one by one.
+
+Notes: 
+1. This has only been tested on SQL Server 2005, but so far as I know it should work on 2000 and 2008 as well. 
+2. This will fail if there are so many jobs on the server that more than 4000 characters are needed for the automatically 
+generated script.  In this unlikely case, the @sql variable can be changed to nvarchar max, but this will 
+still cause problems with displaying the script to be used unless the print statement is also replaced by 
+something like the longprint routine.
+3. @description and @new_name are not options because it does not make sense to apply one name or description to all jobs.  @delete_level
+is an option but clearly this one should be used with extraordinary care.
+4. Using either SSMS 2008 or 3rd party tools such as Red Gate SQL Multi-Script it is possible to run this against multiple servers 
+simultaneously.
+*/
+
+/*********************************************** Ensure this is in the correct database ********************************************************/
+use msdb 
+
+GO
+
+/*********************************************** Declare Variables ****************************************************************************/
+Declare /* These are initialized in the next section and control what is passed to sp_update_job */
+	@owner_login_name nvarchar(128),
+	@enabled tinyint, /* 1 is enabled, 0 is disabled */
+	@notify_level_eventlog int,
+	@notify_level_email int,
+	@notify_level_netsend int,
+	@notify_level_page int,
+	@notify_email_operator_name nvarchar(128),
+	@notify_netsend_operator_name nvarchar(128),
+	@notify_page_operator_name nvarchar(128),
+	@delete_level int /*This one should be used with extreme caution*/
+
+Declare 
+	@testing tinyint, /* if testing is 1, it will only print the code generated, if testing is any other value it will execute the statements */
+	@exclude nvarchar(128) /*Can be used to exclude a certain procedure by name.  It will accept wildcards. */
+
+Declare /* used by the script */
+	@sql nvarchar(4000)
+
+
+
+/******************************************* Populate the Variables **************************************************************************/
+/* This is the part to change to declare what should be changed.  Any variable left null here will not be included in the 
+sp_update_job statement to be execute */
+
+set @testing = 1 /*If 1, it will print but not execute the commands. Permits manual review before execution */
+set @exclude = NULL /*Can accept wildcards */
+
+set @owner_login_name = NULL
+set @enabled = NULL
+set @notify_level_eventlog = NULL
+set @notify_level_email = NULL
+set @notify_level_netsend = NULL
+set @notify_level_page = NULL
+set @notify_email_operator_name = NULL
+set @notify_netsend_operator_name = NULL
+set @notify_page_operator_name = NULL
+set @delete_level = NULL /*This one should be used with extreme caution*/
+
+
+/******************************************* Generate the commands *************************************************************************/
+/* Coalesce is used to insert that part of the command when the supplied variable is not null and to ensure it
+is not inserted if that variable is null.
+A comma is present at the end of each line.  The very last comma will be removed after it is generated*/
+
+select 
+	@sql = coalesce(@sql, '') + 
+		'exec msdb.dbo.sp_update_job ' + char(10) + /* char(10) is linefeed */ 
+		'	@job_name = N''' + replace(name, '''', '''''') + ''',' + char(10) + /*Replaces single quotes with double quotes inside the name*/
+		coalesce('	@owner_login_name = N''' + @owner_login_name + ''',' + char(10), '') + 
+		coalesce('	@enabled = ' + cast(@enabled as nvarchar) + ',' + char(10), '') + 
+		coalesce('	@notify_level_eventlog = ' + cast(@notify_level_eventlog as nvarchar)+ ',' + char(10), '') + 
+		coalesce('	@notify_level_email = ' + cast(@notify_level_email as nvarchar) + ',' + char(10), '') + 
+		coalesce('	@notify_level_netsend = ' + cast(@notify_level_netsend as nvarchar) + ',' + char(10), '') + 
+		coalesce('	@notify_level_page = ' + cast(@notify_level_page as nvarchar) + ',' + char(10), '') + 
+		coalesce('	@notify_email_operator_name = N''' + @notify_email_operator_name + ''',' + char(10), '') + 
+		coalesce('	@notify_netsend_operator_name = N''' + @notify_netsend_operator_name + ''',' + char(10), '') + 
+		coalesce('	@notify_page_operator_name = N''' + @notify_page_operator_name + ''',' + char(10), '') + 
+		coalesce('	@delete_level = ' + cast(@delete_level as nvarchar) + ',' + char(10), '') + 
+		';' + char(10) + char(10)
+From 
+	msdb.dbo.sysjobs
+where 
+	name not like coalesce(@exclude, '')
+
+	
+set @sql = replace(@sql, ',' + char(10) + ';', ';') /* Removes the final comma from each sp_update_job command */
+
+/**************************************** Print and/or execute the commands ***********************************************************/
+ 
+ print @sql
+ 
+if @testing != 1
+	BEGIN
+		print char(10) + '-- Executing all commands' + char(10)
+		exec (@sql)
+	END
+ELSE
+	print char(10) + '-- Not executing any command' +char(10)
+	
+
+ 
+

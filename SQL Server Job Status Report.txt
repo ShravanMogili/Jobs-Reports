@@ -1,0 +1,385 @@
+SQL Server Job Status Report
+
+http://www.sqlservercentral.com/scripts/Maintenance+and+Management/30996/
+
+This script generates an HTML report on the status of all jobs on a specific SQL Server instance. The report consists of several sections: a summary report of jobs that have passed, failed, been cancelled, or whose status is unknown; a detailed report of the status of each job.
+
+The script is designed to be included in a DTS package ActiveX Task component and makes use of a number of DTS Package Global Variables - these variables are listed in detail in the script header.
+
+The server from which the script is executed requires ADO to be installed, and also Outlook if the email option is to be used - I personally run this script from a SQL Server instance on my desktop PC.
+
+This script has been tested against SQL Server 2000 running on NT and Win2K. 
+
+
+
+
+
+'**********************************************************************************************************
+'  Name: 		SQL Server Job Status Report
+'  Script Language: 	VBScript
+'  Author: 		Dave Leathem
+'  Date: 			28th Nov 2003
+'
+'  Description:
+'  This script will generate an HTML report of the last run status for all jobs on a specified
+'  SQL Server instance. This report can be emailed to specified addresses if required, or
+'  the generated HTML file may be published to a web site or distributed with any other file
+'  distribution mechanisms.
+'  The report is broken down into three sections: a summary report of the number of jobs
+'  which succeeded, failed, were cancelled or have an UNKNOWN status; a list of jobs by
+'  status; a detailed report on the last recorded run of each job. Each section in the report
+'  is hyper-linked to allow easy reference and navigation between sections.
+'
+'  Package Global Variables:
+'  This script requires a number of Global Variables to be created in any package that it is
+'  included as part of.
+'  Varible Name		Req'd/Opt	Description
+'  ------------------------------------	-------------------------	---------------------------------------------------------------------------
+'  TARGET_SERVER	Required	Specifies the SQL Server instance for which the
+'					job report will be compiled.
+'  ADDRESSES		Optional		Contains a list of email addresses to which the
+'					report will be sent. Addresses must be separated
+'					by semi-colons, and the list must be terminated
+'					with a semi-colon.
+'  WIN_SECURITY	Required	Specifies whether to use Windows Integrated
+'					Security when connecting to the specified SQL
+'					Server instance. Valid values are "YES" and
+'					"NO".
+'  UID			Optional		Only required if Windows Integrated Security is
+'					not being used. Specifies a valid SQL Server
+'					user ID.
+'  PWD			Optional		Only required if Windows Integrated Security is
+'					not being used. Specifies the password for the
+'					SQL Server user ID.
+'  EMAIL_REPORT	Required	Specifies if the job report is to be emailed. Valid
+'					values are "YES" and "NO".
+'  REPORT_PATH	Required	Specifies the file path where the job report will
+'					be written to.
+'  KEEP_REPORT_FILE	Required	Specifies if the Report file is to be retained when
+'					the report is generated. Valid values are "YES"
+'					and "NO".
+'
+'**********************************************************************************************************
+
+'**********************************************************************************************************
+' Function:	JobDateTime
+' Description:	Accepts unformatted data and time parameters and returns formatted
+'		datetime string as "DD Mon YYYY HH:MM:SS".
+'**********************************************************************************************************
+Private Function JobDateTime(InDate, InTime)
+
+	Dim strDate, strTime, dtDateTime
+	    
+	strDate = ""
+	strTime = ""
+	    
+	If InDate = "0" Then
+		strDate = "01/01/1900"
+	Else
+		strDate = Right(InDate, 2) & " " & MonthName(CInt(Mid(InDate, 5, 2)),True) & " " & Left(InDate, 4)
+	End If
+	    
+	If InTime = "0" Then
+		strTime = "00:00:00"
+	Else
+		If Len(InTime) = 5 Then InTime = "0" & InTime
+		strTime = Left(InTime, 2) & ":" & Mid(InTime, 3, 2) & ":" & Right(InTime, 2)
+	End If
+	    
+	JobDateTime = strDate & " " & strTime
+
+End Function
+
+'**********************************************************************************************************
+' Function:	JobStatus
+' Description:	Accepts numeric status code and returns string description.
+'**********************************************************************************************************
+Private Function JobStatus(InStatus)
+
+	If InStatus = 1 Then
+		JobStatus = "SUCCESS"
+	ElseIf InStatus = 3 Then
+		JobStatus = "CANCELLED"
+	ElseIf InStatus = 5 Then
+		JobStatus = "UNKNOWN"
+	Else
+		JobStatus = "FAILED"
+	End If
+
+End Function
+
+'**********************************************************************************************************
+' Function:	Main
+' Description:	Main processing function for ActiveX script. This function should be 
+'		defined as the "Entry function" for the ActiveX Script Task.
+'**********************************************************************************************************
+Function Main()
+
+	Dim JobsFail, JobsSucc, JobsCanc, JobsDsbl, JobsTotl, JobUnk
+	Dim TextFail, TextSucc, TextCanc, TextDsbl, TextUnk
+	Dim TitleFail, TitleSucc, TitleCanc, TitleDsbl, TitleUnk
+	Dim MailSubject, MailText, JobInfo, AddrList, Addr, iChar, Char
+	Dim ErrMsg, ErrLineNo, LineCount, ErrLine
+	Dim JobName
+	
+	' Declare ADO object variables
+	Dim adoConn, rsJob, rsJobHistory, rsJobStep
+	DIm strJobSQL, strJobHistorySQL, strJobStepSQL
+
+	' Declare FileSystemObject variables
+	Dim oFSO, OutFile, ReadFile
+	Dim TempFail, TempSucc, TempCanc, TempUnk
+
+	' Declare Outlook object variables
+	Dim olApp, olMail, olNameSpace
+
+	' Create ADO objects
+	set adoConn = CreateObject("ADODB.Connection")
+	set rsJob = CreateObject("ADODB.RecordSet")
+	set rsJobHistory = CreateObject("ADODB.RecordSet")
+	set rsJobStep = CreateObject("ADODB.Recordset")
+
+	' Open ADO connection using windows security
+	IF DTSGlobalVariables("WIN_SECURITY").Value = "YES" THEN
+		adoConn.Open = "Provider=SQLOLEDB;Integrated Security=SSPI;Data Source=" & DTSGlobalVariables("TARGET_SERVER").Value & ";Database=MSDB;Application Name=Job Status Report"
+	ELSE
+		adoConn.Open = "Provider=SQLOLEDB;UID=" & DTSGlobalVariables("UID").Value & ";PWD=" & DTSGlobalVariables("PWD").Value & ";Data Source=" & DTSGlobalVariables("TARGET_SERVER").Value & ";Database=MSDB;Application Name=Job Status Report"
+	END IF
+
+	' Set query test for jobs
+	strJobSQL = "EXEC msdb.dbo.sp_help_job"
+	' Open ADO record set
+	rsJob.Open strJobSQL, adoConn
+
+	' Create output file
+	Set oFSO = CreateObject("Scripting.FileSystemObject")
+	Set OutFile = oFSO.CreateTextFile(DTSGlobalVariables("REPORT_PATH").Value,true)
+	OutFile.WriteLine("<HTML>")
+	OutFile.WriteLine("<HEAD>")
+	OutFile.WriteLine("<TITLE>Job Status Report for " & DTSGlobalVariables("TARGET_SERVER").Value & " on " & Date & " " & Time & "</TITLE>")
+	OutFile.WriteLine("</HEAD>")
+	OutFile.WriteLine("<BODY>")
+	OutFile.WriteLine("<FONT SIZE=5 COLOR=""DARKRED""><B><U>Job Status Report for " & DTSGlobalVariables("TARGET_SERVER").Value & " on " & Date & " " & Time & "</U></B></FONT>")
+	OutFile.WriteLine("<BR><BR><HR>")
+
+	'Create Outlook objects
+	If DTSGlobalVariables("EMAIL_REPORT").Value = "YES" Then
+		Set olApp = CreateObject("Outlook.Application")
+		Set olNameSpace = olApp.GetNameSpace("MAPI")
+		olNameSpace.Logon
+		Set olMail = olApp.CreateItem(0)
+	End If
+
+	' Loop through all record for summary report
+
+	JobsFail = 0
+	TempFail = ""
+	JobsSucc = 0
+	TempSucc = ""
+	JobsCanc = 0
+	TempCanc = ""
+	JobsTotl = 0
+	JobsUnk = 0
+	TempUnk = ""
+
+	OutFile.WriteLine("<FONT COLOR=""DARKRED""><B><U><A NAME=""SummaryTitle"">SUMMARY REPORT OF JOBS</U></B></FONT>")
+	OutFile.WriteLine("<P>")
+	rsJob.MoveFirst
+	JobName = ""
+	While Not rsJob.Eof
+		JobsTotl = JobsTotl + 1
+		If rsJob.Fields.Item(21) = 1 Then
+			JobsSucc = JobsSucc + 1
+			TempSucc = TempSucc & "<TR><TD><A HREF=""#" & rsJob.Fields.Item(0) & """>" & rsJob.Fields.Item(2) & "</A></TD>"
+			If rsJob.Fields.Item(3) = 0 Then
+				TempSucc = TempSucc & "<TD>NO</TD>"
+			Else
+				TempSucc = TempSucc & "<TD>YES</TD>"
+			End If
+			TempSucc = TempSucc & "<TD>" & JobDateTime(RTrim(rsJob.Fields.Item(19)), RTrim(rsJob.Fields.Item(20))) & "</TD></TR>" & vbCrLf
+		ElseIf rsJob.Fields.Item(21) = 3 Then 
+			JobsCanc = JobsCanc + 1
+			TempCanc = TempCanc & "<TR><TD><A HREF=""#" & rsJob.Fields.Item(0) & """>" & rsJob.Fields.Item(2) & "</A></TD>"
+			If rsJob.Fields.Item(3) = 0 Then
+				TempCanc = TempCanc & "<TD>NO</TD>"
+			Else
+				TempCanc = TempCanc & "<TD>YES</TD>"
+			End If
+			TempCanc = TempCanc & "<TD>" & JobDateTime(RTrim(rsJob.Fields.Item(19)), RTrim(rsJob.Fields.Item(20))) & "</TD></TR>" & vbCrLf
+		ElseIf rsJob.Fields.Item(21) = 5 Then 
+			JobsUnk = JobsUnk + 1
+			TempUnk = TempUnk & "<TR><TD><A HREF=""#" & rsJob.Fields.Item(0) & """>" & rsJob.Fields.Item(2) & "</A></TD>"
+			If rsJob.Fields.Item(3) = 0 Then
+				TempUnk = TempUnk & "<TD>NO</TD>"
+			Else
+				TempUnk = TempUnk & "<TD>YES</TD>"
+			End If
+			TempUnk = TempUnk & "<TD>" & JobDateTime(RTrim(rsJob.Fields.Item(19)), RTrim(rsJob.Fields.Item(20))) & "</TD></TR>" & vbCrLf
+		Else 
+			JobsFail = JobsFail + 1
+			TempFail = TempFail & "<TR><TD><A HREF=""#" & rsJob.Fields.Item(0) & """>" & rsJob.Fields.Item(2) & "</A></TD>"
+			If rsJob.Fields.Item(3) = 0 Then
+				TempFail = TempFail & "<TD>NO</TD>"
+			Else
+				TempFail = TempFail & "<TD>YES</TD>"
+			End If
+			TempFail = TempFail & "<TD>" & JobDateTime(RTrim(rsJob.Fields.Item(19)), RTrim(rsJob.Fields.Item(20))) & "</TD></TR>" & vbCrLf
+		End If
+		rsJob.MoveNext
+	Wend
+
+	' Create summary report of job statistics
+	OutFile.WriteLine("<TABLE BORDER=1 WIDTH=250>")
+	OutFile.WriteLine("<TR><TD><A HREF=""#JobsSucc"">Successful Jobs</A></TD><TD>" & JobsSucc & "</TD></TR>")
+	OutFile.WriteLine("<TR><TD><A HREF=""#JobsFail"">Failed Jobs</A></TD><TD>" & JobsFail & "</TD></TR>")
+	OutFile.WriteLine("<TR><TD><A HREF=""#JobsCanc"">Cancelled Jobs</A></TD><TD>" & JobsCanc & "</TD></TR>")
+	OutFile.WriteLine("<TR><TD><A HREF=""#JobsUnk"">Job Status UNKNOWN</A></TD><TD>" & JobsUnk & "</TD></TR>")
+	OutFile.WriteLine("<TR></TR><TR></TR><TR></TR><TR></TR>")
+	OutFile.WriteLine("<TR><TD><B>Total Jobs</TD><TD><B>" & JobsTotl & "</TD></TR>")
+	OutFile.WriteLine("</TABLE>")
+	OutFile.WriteLine("<BR><BR>")
+
+	' Create summary reports by job status
+	TempSucc = "<TR BGCOLOR=""RED""><TD><B><A NAME=""JobsSucc"">Jobs Succeeded : " & JobsSucc & "</TD><TD WIDTH=50><B>Enbl</TD><TD WIDTH=150><B>Last Run Time</TD></TR>" & vbCrLf & TempSucc
+	TempSucc = "<TABLE BORDER=1 WIDTH=100%>" & vbCrLf & TempSucc
+	TempSucc = TempSucc & "</TABLE>" &vbCrLf
+	TempSucc = TempSucc & "<A HREF=""#SummaryTitle""><FONT SIZE=1>Back To Top</FONT></A>" & vbCrLf
+	TempSucc = TempSucc & "<BR><BR>" & vbCrLf
+
+	TempFail = "<TR BGCOLOR=""RED""><TD><B><A NAME=""JobsFail"">Jobs Failed : " & JobsFail & "</TD><TD WIDTH=50><B>Enbl</TD><TD WIDTH=150><B>Last Run Time</TD></TR>" & vbCrLf & TempFail
+	TempFail = "<TABLE BORDER=1 WIDTH=100%>" & vbCrLf & TempFail
+	TempFail = TempFail & "</TABLE>" &vbCrLf
+	TempFail = TempFail & "<A HREF=""#SummaryTitle""><FONT SIZE=1>Back To Top</FONT></A>" & vbCrLf
+	TempFail = TempFail & "<BR><BR>" & vbCrLf
+
+	TempCanc = "<TR BGCOLOR=""RED""><TD><B><A NAME=""JobsCanc"">Jobs Cancelled : " & JobsCanc & "</TD><TD WIDTH=50><B>Enbl</TD><TD WIDTH=150><B>Last Run Time</TD></TR>" & vbCrLf & TempCanc
+	TempCanc = "<TABLE BORDER=1 WIDTH=100%>" & vbCrLf & TempCanc
+	TempCanc = TempCanc & "</TABLE>" &vbCrLf
+	TempCanc = TempCanc & "<A HREF=""#SummaryTitle""><FONT SIZE=1>Back To Top</FONT></A>" & vbCrLf
+	TempCanc = TempCanc & "<BR><BR>" & vbCrLf
+
+	TempUnk = "<TR BGCOLOR=""RED""><TD><B><A NAME=""JobsUnk"">Job Status UNKNOWN : " & JobsUnk & "</TD><TD WIDTH=50><B>Enbl</TD><TD WIDTH=150><B>Last Run Time</TD></TR>" & vbCrLf & TempUnk
+	TempUnk = "<TABLE BORDER=1 WIDTH=100%>" & vbCrLf & TempUnk
+	TempUnk = TempUnk & "</TABLE>" &vbCrLf
+	TempUnk = TempUnk & "<A HREF=""#SummaryTitle""><FONT SIZE=1>Back To Top</FONT></A>" & vbCrLf
+	TempUnk = TempUnk & "<BR><BR>" & vbCrLf
+
+	' Add reports to mail - Successful job list not currently added
+	OutFile.Write(TempFail)
+	OutFile.Write(TempCanc)
+	OutFile.Write(TempUnk)
+	OutFile.Write(TempSucc)
+	OutFile.WriteLine("<HR>")
+
+	' Loop through all records for detailed report
+	OutFile.WriteLine("<FONT COLOR=""DARKRED""><B><U><A NAME=""DetailTitle"">DETAIL REPORT OF JOBS</U></B></FONT>")
+	OutFile.WriteLine("<P>")
+	rsJob.MoveFirst	
+	JobName = ""
+	While Not rsJob.Eof
+		' Write Heading for current job
+		OutFile.WriteLine("<TABLE BORDER=1 WIDTH=100%>")
+		OutFile.WriteLine("<TR><TD BGCOLOR=""NAVY""><B><FONT COLOR=""WHITE""><A NAME=""" & rsJob.Fields.Item(0) & """>" & rsJob.Fields.Item(2) & "</TD></TR>")
+		OutFile.WriteLine("</TABLE>")
+		OutFile.WriteLine("<TABLE BORDER=1 WIDTH=100%>")
+		OutFile.WriteLine("<TR><TD WIDTH=100>Job Status</TD><TD>" & JobStatus(rsJob.Fields.Item(21)) & "</TD></TR>")
+		If rsJob.Fields.Item(24) = 0 Then
+			OutFile.WriteLine("<TR><TD>Next Run Time</TD><TD><I>Next Run Time Not Set</TD></TR>")
+		Else
+			OutFile.WriteLine("<TR><TD>Next Run Time</TD><TD>" & JobDateTime(RTrim(rsJob.Fields.Item(22)),RTrim(rsJob.Fields.Item(23))) & "</TD></TR>")
+		End If
+		OutFile.WriteLine("</TABLE>")
+		' Open Job History for Current Job
+		If rsJobStep.State <> 0 Then rsJobStep.Close
+		strJobStepSQL = "EXEC msdb.dbo.sp_help_jobstep @job_id='" & rsJob.Fields.Item(0) & "'"
+		rsJobStep.Open strJobStepSQL, adoConn
+		' Write last run outcome
+		OutFile.WriteLine("<TABLE BORDER=1 WIDTH=100%>")
+		OutFile.WriteLine("<TR><TD><B>Last Run Outcome</TD></TR>")
+		If rsJob.Fields.Item(19) <> 0 Then
+			strJobHistorySQL = "EXEC msdb.dbo.sp_help_jobhistory @job_id='" & rsJob.Fields.Item(0) & "', @step_id = 0, @mode='FULL', @start_run_date=" & rsJob.Fields.Item(19) & ", @start_run_time=" & rsJob.Fields.Item(20)
+			rsJobHistory.Open strJobHistorySQL, adoConn
+			If rsJobHistory.EOF and rsJobHistory.BOF Then
+				OutFile.WriteLine("<TR><TD><I>No History Found For this Job</TD></TR>")
+			Else
+				OutFile.WriteLine("<TR><TD>" & rsJobHistory.Fields.Item(7) & "</TD></TR>")
+			End If
+			rsJobHistory.Close
+		Else
+			OutFile.WriteLine("<TR><TD><I>No History Found For this Job</TD></TR>")
+		End If
+		OutFile.WriteLine("</TABLE>")
+		' Write Job Step Report
+		While Not rsJobStep.EOF
+			OutFile.WriteLine("<TABLE BORDER=1 WIDTH=100%>")
+			OutFile.WriteLine("<TR><TD><B>Step #" & rsJobStep.Fields.Item(0) & " - " & rsJobStep.Fields.Item(1) & "</TD></TR>")
+			OutFile.WriteLine("</TABLE>")
+			OutFile.WriteLine("<TABLE BORDER=1 WIDTH=100%>")
+			OutFile.WriteLine("<TR><TD WIDTH=100>Last Run Time</TD><TD>" & JobDateTime(RTrim(rsJobStep.Fields.Item(20)), RTrim(rsJobStep.Fields.Item(21))) & "</TD></TR>")
+			OutFile.WriteLine("<TR><TD>Command Type</TD><TD>" & rsJobStep.Fields.Item(2) & "</TD></TR>")
+			OutFile.WriteLine("<TR><TD>Command</TD><TD>" & Replace(rsJobStep.Fields.Item(3), vbCrLf, "<BR>") & "</TD></TR>")
+			If rsJob.Fields.Item(19) <> 0 Then
+				strJobHistorySQL = "EXEC msdb.dbo.sp_help_jobhistory @job_id='" & rsJob.Fields.Item(0) & "', @step_id = " & rsJobStep.Fields.Item(0) & ", @mode='FULL', @start_run_date=" & rsJob.Fields.Item(19) & ", @start_run_time=" & rsJob.Fields.Item(20)
+				rsJobHistory.Open strJobHistorySQL, adoConn
+				If Not (rsJobHistory.EOF and rsJobHistory.BOF) Then
+					OutFile.WriteLine("<TR><TD>Message</TD><TD>" & Replace(rsJobHistory.Fields.Item(7), vbCrLf, "<BR>") & "</TD></TR>")
+				End If
+				rsJobHistory.Close
+			End If
+			OutFile.WriteLine("</TABLE>")
+			rsJobStep.MoveNext
+		Wend
+		rsJob.MoveNext
+		' Close off Report
+		OutFile.WriteLine("<A HREF=""#SummaryTitle""><FONT SIZE=1>Back To Summary Report</FONT></A>")
+		OutFile.WriteLine("<P>")
+	Wend
+
+	If JobsFail = 0 Then
+		MailSubject = "Job Status : " & DTSGlobalVariables("TARGET_SERVER").Value & " : No Failures"
+	Else
+		MailSubject = "Job Status : " & DTSGlobalVariables("TARGET_SERVER").Value & " : " & JobsFail & " Failures"
+	End If
+
+	' Close report file
+	OutFile.WriteLine("</BODY>")
+	OutFile.WriteLine("</HTML>")
+	OutFile.Close
+
+	Set ReadFile = oFSO.OpenTextFile(DTSGlobalVariables("REPORT_PATH").Value, 1)
+
+	'Determine if report is to be emailed
+	If DTSGlobalVariables("EMAIL_REPORT").Value = "YES" Then
+		' Set email properties
+		AddrList = DTSGlobalVariables("ADDRESSES").Value
+		Addr = ""
+		For iChar = 1 To Len(AddrList) - 1
+			If Mid(AddrList, iChar, 1) = ";" Then
+				olMail.Recipients.Add Addr
+				Addr = ""
+			Else
+				Addr = Addr & Mid(AddrList, iChar, 1)
+			End If
+		Next
+		olMail.Recipients.Add Addr
+		olMail.Recipients.ResolveAll
+		olMail.Subject = MailSubject
+		olMail.HTMLBody = ReadFile.ReadAll
+		olMail.Send
+	End If
+
+	' Clean Up
+	ReadFile.Close
+	If DTSGlobalVariables("KEEP_REPORT_FILE").Value = "NO" Then
+		oFSO.DeleteFile DTSGlobalVariables("REPORT_PATH").Value, True
+	End If
+	Set oFSO = Nothing
+	Set olMail = Nothing
+	Set olApp = Nothing
+
+	Main = DTSTaskExecResult_Success
+
+End Function
+
+
+

@@ -1,0 +1,73 @@
+This script will verify the SQL Server instance and enabled/disabled the jobs based on the replica server state.
+
+-- Enabling/Disabling SQL agent jobs on AO instances.
+-- <Raghavender Chavva>
+-- <20th March,2014>
+-- <This query is not suitable for SQL Server versions which are below SQL Server 2012 and SQL Servers which are not in Always On>
+-- < This script will verify the SQL Server instance and enabled/disabled the jobs based on the replica server state.>
+
+-- Step 1: -- ---checking instance replica status (here Primary)
+
+if((select role_desc from sys.dm_hadr_availability_replica_cluster_states arc,sys.dm_hadr_availability_replica_states ars where arc.replica_id=ars.replica_id and arc.group_id=ars.group_id and replica_server_name=(select @@SERVERNAME))='PRIMARY') 
+
+begin
+
+-- Step 2: -- Colleting the job names
+
+select name into #temp from msdb..sysjobs where enabled=0 and name not in('_SQL_BackupTranAll','_SQL_BackupAll','syspolicy_purge_history')
+
+
+-- select * from #temp
+
+declare @jobname varchar(200)
+DECLARE db_cursor CURSOR FOR 
+SELECT name
+FROM #temp
+OPEN db_cursor  
+FETCH NEXT FROM db_cursor INTO @jobname  
+
+
+--- Step 3: Enabling the required jobs.
+
+WHILE @@FETCH_STATUS = 0  
+BEGIN  
+       print 'Job name in primary '+@jobname 
+        print 'exec msdb..sp_update_job @job_name = '''+@jobname+''', @enabled = 1' –- Enabling the jobs
+       FETCH NEXT FROM db_cursor INTO @jobname  
+END  
+
+CLOSE db_cursor  
+DEALLOCATE db_cursor
+drop table #temp
+END
+
+-- Step 4: -- ---checking instance replica status (here Secondary)
+
+else
+if((select role_desc from sys.dm_hadr_availability_replica_cluster_states arc,sys.dm_hadr_availability_replica_states ars where arc.replica_id=ars.replica_id and arc.group_id=ars.group_id and replica_server_name=(select @@SERVERNAME))='SECONDARY')
+
+–- Step 5:  Colleting the job names
+
+begin
+select name into #temp1 from msdb..sysjobs where enabled=1 and name not in('_SQL_BackupTranAll','_SQL_BackupAll','syspolicy_purge_history','_SQL_DBCCCheckDB','_SQL_DbccCheckFG','_SQL_DbccCheckTable','_SQL_DbccCheckCatalog')
+--select * from #temp
+declare @jobname1 varchar(200)
+DECLARE db_cursor CURSOR FOR SELECT name FROM #temp1
+OPEN db_cursor  
+FETCH NEXT FROM db_cursor INTO @jobname1 
+
+–- Step 6: Disabling the jobs
+
+WHILE @@FETCH_STATUS = 0  
+BEGIN  
+       print 'Job name in secondary '+@jobname1 
+        print 'exec msdb..sp_update_job @job_name = '''+@jobname1+''', @enabled = 0'
+
+
+       FETCH NEXT FROM db_cursor INTO @jobname1  
+END  
+
+CLOSE db_cursor  
+DEALLOCATE db_cursor
+drop table #temp1
+end

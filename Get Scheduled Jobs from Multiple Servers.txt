@@ -1,0 +1,83 @@
+Get Scheduled Jobs from Multiple Servers
+
+http://www.sqlservercentral.com/scripts/list+scheduled+jobs/95079/
+
+ I needed to be able to loop thru several SQL servers and get the active maintenance jobs and the next run times. I hobled together several different scripts and came up with the below list.
+Thanks to Rahul Vairagi (http://sqlserver2005forum.blogspot.com/2011/02/script-to-know-jobs-scheduled.html) and Kishore (http://www.dev-exchange.com/cms_view_article.php?aid=27) for doing the heavy lifting.
+
+Run this from a server which you have rights to the MSDB database and each linked server must have the same rights. 
+
+The original article for the Job listing by Rahul Vairagi (link above), put this code in a stored procedure but here it can simply be pasted in to a query window in SSMS.
+
+
+-- Use the to find "Maintenance" Jobs. Just put a "%" in it for all jobs. % is a wild card in TSQL
+DECLARE @JobName VARCHAR(50)
+SET @JobName = 'maintenance%'
+
+-- Server List, ALLWAYS have a comma at end
+-- This list MUST be linked servers from whatever SQL server you are running it on
+DECLARE @ServerName VARCHAR(30) 
+       ,@position INT 
+       ,@ServerList varchar(8000); 
+SET @position=0; 
+SET @ServerList='<[SQLServer1]>,<[SQLServer2\ServerInstance]>,<[SQLServer3],'; 
+
+-- Variable to hold dynamic SQL
+DECLARE @sql VARCHAR(8000)     
+
+-- Beginning of loop for servers
+WHILE charindex(',',@ServerList)>0 
+BEGIN 
+
+-- Get the next server in the list
+SET @ServerName = cast(substring(@ServerList,0, charindex(',',@ServerList)) as VARCHAR(30)) 
+
+-- This gets all the jobs, part 2 below queries the results
+SET @sql = 'WITH OurJobs AS (
+    SELECT  job.[name]
+     , CASE job.[description] WHEN ''No description available.'' THEN NULL ELSE job.description END AS Description
+     , CASE sched.next_run_date
+            WHEN 0 THEN ''Never''
+            ELSE
+              CONVERT(varchar(10), CONVERT(smalldatetime, CAST(sched.next_run_date as varchar), 120), 120)+'' ''+
+              RIGHT(''0''+CAST((sched.next_run_time/10000) AS VARCHAR), 2)+'':''+
+              RIGHT(''0''+CAST((sched.next_run_time-((sched.next_run_time/10000)*10000))/100 AS VARCHAR), 2)+'':''+
+              RIGHT(''0''+CAST((sched.next_run_time-((sched.next_run_time/10000)*10000)-((sched.next_run_time-((sched.next_run_time/10000)*10000))/100*100)) AS VARCHAR), 2)
+      END AS NextRunDateTime
+
+      , (
+        SELECT CASE last_run_date
+            WHEN 0 THEN ''Never''
+            ELSE
+              CONVERT(varchar(10), CONVERT(smalldatetime, CAST(last_run_date as varchar), 120), 120)+'' ''+
+              RIGHT(''0''+CAST((last_run_time/10000) AS VARCHAR), 2)+'':''+
+              RIGHT(''0''+CAST((last_run_time-((last_run_time/10000)*10000))/100 AS VARCHAR), 2)+'':''+
+              RIGHT(''0''+CAST((last_run_time-((last_run_time/10000)*10000)-((last_run_time-((last_run_time/10000)*10000))/100*100)) AS VARCHAR), 2)
+          END AS LastRunDateTime
+        FROM ' + @ServerName + '.msdb.dbo.sysjobsteps
+        WHERE job_id = job.job_id AND step_id = (
+          SELECT MAX(step_id)
+          FROM ' + @ServerName + '.msdb.dbo.sysjobsteps
+          WHERE job_id = job.job_id
+        )
+      ) as LastSuccessfulExecution
+      , job.date_modified
+   FROM ' + @ServerName + '.msdb.dbo.sysjobs job JOIN ' + @ServerName + '.msdb.dbo.sysjobschedules sched
+        ON sched.job_id = job.job_id
+    WHERE job.enabled = 1 -- remove this if you wish to return all jobs
+        AND sched.next_run_date > 0 --GETDATE()
+)
+
+-- Part 2, queries table of jobs
+SELECT * FROM OurJobs 
+WHERE DATEDIFF(hh, GETDATE(), NextRunDateTime) <= ' + CAST(@HoursForward AS CHAR(3)) + '
+AND NextRunDateTime > GETDATE()
+AND name LIKE ''' + @JobName + '''
+ORDER BY NextRunDateTime ASC'
+
+--PRINT @sql
+EXEC (@sql)
+
+SET @ServerList = substring(@ServerList, charindex(',',@ServerList)+1, LEN(@ServerList) - @position);
+
+END

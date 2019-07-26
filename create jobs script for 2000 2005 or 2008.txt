@@ -1,0 +1,614 @@
+create jobs script for 2000 2005 or 2008
+
+ all you need to know is that
+
+2000 uses 'Ole Automation Procedures'
+
+2005 uses vbscript
+
+2008 uses powershell
+
+had to do it this way due to complexity but someone else might be able to fix it better.
+
+if you do not have powershell installed on 2008 sql server you can use the vbscript version also for 2008 just change the code to jump to that part.
+
+execution is easy, note there is no file extension on the @ps1filename
+
+exec [dbo].[DR_Generate_Script_SQL_Agent_Jobs]
+
+@ps1filename = 'c:\downloads\createjobs',
+
+@filename =  'c:\downloads\createjobsscript.sql',
+
+@catfilename = 'c:\downloads\tempcategoryscript.sql', @tempfilename = 'c:\downloads\tempjobsscript.sql'
+
+Works for all three environments and its ugly code but it works. maybe if I get time I will work on it and clean it up.
+
+V1 and V2 of powershell require a slightly different syntax and as a result i have to test for powershell version at end of powershell script for 2008
+
+
+
+
+SET ANSI_NULLS ON
+
+GO
+
+SET QUOTED_IDENTIFIER ON
+
+GO
+
+-- =============================================================================
+
+-- Author:????Gene Hunter
+
+-- Create date: 11/04/2011
+
+-- Description:????Job to script out all SQL Server Agent jobs
+
+-- Separate code for SQL2000/2005/2008 May need to be updated for next SQL Version
+
+-- 
+
+-- Parameter @ps1filename must not have an extension just a filename
+
+-- Example: exec dbo.DBA_DR_Generate_Script_SQL_Agent_Jobs 
+
+--@FileName = 'c:\downloads\sqljobs.sql',
+
+-- @ps1filename = 'c:\downloads\Script_SQL_Agent_Jobs',
+
+--@catfilename = 'c:\downloads\tempcategoryscript.sql', 
+
+--@tempfilename = 'c:\downloads\tempjobscript.sql'
+
+-- =============================================================================
+
+/*Requires this run to turn on feature on SQL 2000/2005
+
+sp_configure 'show advanced options', 1;
+
+GO
+
+RECONFIGURE;
+
+GO
+
+sp_configure 'Ole Automation Procedures', 1;
+
+GO
+
+RECONFIGURE;
+
+GO
+
+*/
+
+CREATE PROCEDURE [dbo].[DR_Generate_Script_SQL_Agent_Jobs]
+
+????-- Add the parameters for the stored procedure here
+
+???? @FileName varchar(200), -- File name to script jobs out 
+
+???? @ps1filename Varchar(300), -- File name to create powershell or vbs script
+
+???? @catfilename varchar(300), -- file name of category script later appended with jobs script
+
+???? @tempfilename varchar(300) -- tempfile to hold job script, append to @filename
+
+AS
+
+BEGIN
+
+-- SET NOCOUNT ON added to prevent extra result sets from
+
+-- interfering with SELECT statements.
+
+SET NOCOUNT ON;
+
+--sp_OA params
+
+DECLARE @cmd varchar(255) -- Command to run
+
+DECLARE @oSQLServer int -- OA return object 
+
+DECLARE @hr int -- Return code
+
+-- version parameters
+
+DECLARE @sqlver sql_variant
+
+DECLARE @sqlver2 varchar(20)
+
+DECLARE @sqlver3 int
+
+declare @sql3 varchar(900)
+
+declare @sql varchar(900)
+
+declare @sql2 varchar(900)
+
+declare @psver int
+
+--User params
+
+DECLARE @Server varchar(30) -- Server name to run script on. By default, local server.
+
+Select @Server = @@SERVERNAME
+
+--SQL DMO Constants
+
+DECLARE @ScriptType varchar(50)
+
+DECLARE @Script2Type varchar(50)
+
+SET @ScriptType = '327' -- Send output to file, Transact-SQL, script permissions, test for existence, used quoted characters.
+
+SET @Script2Type = '3074' -- Script Jobs, Alerts, and use CodePage 1252.
+
+-- Create category script to later append the jobs script with.
+
+---------------------------------------------------------------
+
+DECLARE @cmd5 sysname, @var sysname
+
+-- truncate file or create file
+
+SET @var = 'echo off > '
+
+SET @cmd5 = @var + @catfilename
+
+EXEC master..xp_cmdshell @cmd5
+
+
+
+DECLARE @stringname VARCHAR(1000) 
+
+DECLARE db_cursor CURSOR FOR 
+
+select ('if (select count(*) from msdb.dbo.syscategories where name = ' + char (39) + name + char (39) + ') ' + CHAR(94) + +CHAR(62) + ' 1 ' +
+
+'EXEC msdb.dbo.sp_add_category @name = ' + char (39) + name + char (39) ) 
+
+ from msdb.dbo.syscategories Where category_class = 1 AND category_type = 1 and name NOT LIKE '%Uncategorized%'
+
+ OPEN db_cursor 
+
+FETCH NEXT FROM db_cursor INTO @stringname 
+
+WHILE @@FETCH_STATUS = 0 
+
+BEGIN 
+
+-- insert stringname into @filename 
+
+DECLARE @cmd6 VARCHAR(4000)
+
+SET @cmd6 = 'echo' + ' ' + @stringname + ' >> ' + @catfilename
+
+EXEC master..xp_cmdshell @cmd6
+
+FETCH NEXT FROM db_cursor INTO @stringname 
+
+END 
+
+CLOSE db_cursor 
+
+DEALLOCATE db_cursor
+
+-- enter one more GO before the job script runs.
+
+SET @cmd6 = 'echo GO >> ' + @catfilename
+
+EXEC master..xp_cmdshell @cmd6
+
+-- end of create category script
+
+-------------------------------------------------------------
+
+-- set variables for GOTO
+
+-- Get Verion and GOTO it
+
+SELECT @sqlver = SERVERPROPERTY('productversion')
+
+SELECT @sqlver2 = CAST(@sqlver AS varchar(20)) 
+
+select @sqlver3 = SUBSTRING(@sqlver2,1,1)
+
+-- 1 = 2008, 8 = 2000, and 9 = 2005, 1 is short for 10
+
+BEGIN 
+
+IF @sqlver3 = 1 GOTO SERVER2008
+
+IF @sqlver3 = 9 GOTO SERVER2005
+
+IF @sqlver3 = 8 GOTO SERVER2000
+
+GOTO THEEND
+
+END
+
+SERVER2000:
+
+SELECT '>>>>Using OLE Automation - SQL 2000'
+
+-- now write jobs script to @tempfilename 
+
+--CREATE The SQLDMO Object
+
+EXEC @hr = sp_OACreate 'SQLDMO.SQLServer', @oSQLServer OUT
+
+--Set Windows Authentication
+
+EXEC @hr = sp_OASetProperty @oSQLServer, 'LoginSecure', TRUE
+
+--Connect to the Server
+
+EXEC @hr = sp_OAMethod @oSQLServer,'Connect',NULL,@server 
+
+--Script the job out to a text file
+
+SET @cmd = 'Jobserver.Jobs.Script(' + @ScriptType + ',"' + @tempFileName +'",' + @Script2Type + ')'
+
+EXEC @hr = sp_OAMethod @oSQLServer, @cmd 
+
+--Close the connection to SQL Server
+
+--If object is not disconnected, the processes will be orphaned.
+
+EXEC @hr = sp_OAMethod @oSQLServer, 'Disconnect'
+
+--Destroy object created.
+
+exec sp_OADestroy @oSQLServer
+
+-- create the final file 
+
+set @sql3= 'type ' + @catfilename + ' > ' + @filename
+
+exec xp_cmdshell @sql3
+
+-- append job script to @filename
+
+set @sql3= 'type ' + @tempfilename + ' >> ' + @filename
+
+exec xp_cmdshell @sql3
+
+--delete temp file and catfile
+
+set @sql3= 'del ' + @tempfilename + ''
+
+exec xp_cmdshell @sql3
+
+set @sql3= 'del ' + @catfilename + ''
+
+exec xp_cmdshell @sql3
+
+GOTO THEEND
+
+SERVER2005:
+
+SELECT '>>>>Using VBScript - SQL 2005'
+
+-- set filename to .vbs
+
+set @ps1filename = @ps1filename + '.vbs' 
+
+set @sql ='Dim conServer' 
+
+set @sql2 = ' echo ' + @sql + ' > ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Dim fso' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Dim iFile' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Dim oJB' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Dim strJob' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Dim strFilename' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Const ioModeAppend = 8' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Set conServer = CreateObject("SQLDMO.SQLServer")' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='conServer.LoginSecure = True' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='conServer.Connect "' + @server + '"'
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='strFilename = "' + @tempfilename + '"'
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='For Each oJB In conServer.JobServer.Jobs'
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='strJob = strJob ' + CHAR(94) + CHAR(38) + ' "--------------------------------------------------" ' + CHAR(94) + CHAR(38) + ' vbCrLf' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='strJob = strJob ' + CHAR(94) + CHAR(38) + ' "-- SCRIPTING JOB: " ' + CHAR(94) + CHAR(38) + ' oJB.Name ' + CHAR(94) + CHAR(38) + ' vbCrLf' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='strJob = strJob ' + CHAR(94) + CHAR(38) + ' "--------------------------------------------------" ' + CHAR(94) + CHAR(38) + ' vbCrLf' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='strJob = strJob ' + CHAR(94) + CHAR(38) + ' oJB.Script() ' + CHAR(94) + CHAR(38) + ' vbCrLf' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Next' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Set conServer = Nothing' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Set fso = CreateObject("Scripting.FileSystemObject")' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Set iFile = fso.CreateTextFile(strFilename, True)' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='iFile.Write (strJob)' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='iFile.Close' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='Set fso = Nothing' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+-- run vbs file
+
+set @sql2 = @ps1filename 
+
+exec xp_cmdshell @sql2
+
+-- delete the vbs file when done
+
+set @sql3= 'del ' + @ps1filename + ''
+
+exec xp_cmdshell @sql3
+
+-- create the final file 
+
+set @sql3= 'type ' + @catfilename + ' > ' + @filename
+
+exec xp_cmdshell @sql3
+
+-- append job script to @filename
+
+set @sql3= 'type ' + @tempfilename + ' >> ' + @filename
+
+exec xp_cmdshell @sql3
+
+--delete temp file and catfile
+
+set @sql3= 'del ' + @tempfilename + ''
+
+exec xp_cmdshell @sql3
+
+set @sql3= 'del ' + @catfilename + ''
+
+exec xp_cmdshell @sql3
+
+GOTO THEEND
+
+SERVER2008:
+
+SELECT '>>>>Using Powershell - SQL 2008'
+
+-- set filename to .ps1
+
+set @ps1filename = @ps1filename + '.ps1' 
+
+-- set execution policy to allow scripts to be run.
+
+set @sql ='Set-ExecutionPolicy RemoteSigned' 
+
+set @sql2 = 'powershell -c "' + @sql + '"'
+
+exec xp_cmdshell @sql2
+
+--start building ps1 file to execute
+
+set @sql ='[reflection.assembly]::LoadWithPartialName("Microsoft.SqlServer.Smo") ' 
+
+set @sql2 = ' echo ' + @sql + ' > ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='$server = New-Object Microsoft.SqlServer.Management.Smo.Server("' + @server + '")' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='$scripter = New-Object Microsoft.SqlServer.Management.Smo.Scripter($server)' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='$jobs = $server.JobServer.get_Jobs() ' + CHAR(94) + CHAR(124) +' Where-Object {$_.Name -ne "sys*"} ' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='$script = ""' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2
+
+set @sql ='foreach($job in $jobs){ $script += $job.Script() + "GO" ' + CHAR(94) + CHAR(124) + ' Out-File -append ' + @tempfilename + '}' 
+
+set @sql2 = ' echo ' + @sql + ' >> ' + @ps1filename 
+
+exec xp_cmdshell @sql2 
+
+-- script built now find powershell version
+
+-----------------------------------------------
+
+set @sql = 'powershell.exe -c "$Host.Version.Major"'
+
+--creating a temporary table
+
+CREATE TABLE #output
+
+(line INT)
+
+--inserting verion into table
+
+insert #output
+
+EXEC xp_cmdshell @sql
+
+-- set parameter @psver
+
+Set @psver = (select Line as PSVER from #output where line is not null) 
+
+drop table #output
+
+--if psversion = 1 run ps1 else run ps2
+
+IF @psver = 1 GOTO PS1
+
+IF @psver = 2 GOTO PS2
+
+SELECT '>>>>>>> POWERSHELLL DOES NOT SEEM TO BE INSTALLED. <<<<<<<'
+
+GOTO BYPASS
+
+PS1:
+
+-- execute for V1 of powershell
+
+set @sql3= 'powershell.exe -c ' +@ps1filename 
+
+exec xp_cmdshell @sql3
+
+GOTO BYPASS
+
+PS2:
+
+-- execute for  V2 of PowerShell
+set @sql3= 'powershell.exe -file ' + @ps1filename + ''
+
+exec xp_cmdshell @sql3
+
+BYPASS:
+
+-- delete the ps1 file when done
+
+set @sql3= 'del ' + @ps1filename + ''
+
+exec xp_cmdshell @sql3
+
+-- create the final file 
+
+set @sql3= 'type ' + @catfilename + ' > ' + @filename
+
+exec xp_cmdshell @sql3
+
+-- delete the ps1 file when done
+
+set @sql3= 'type ' + @tempfilename + ' >> ' + @filename
+
+exec xp_cmdshell @sql3
+
+--delete temp file and catfile
+
+set @sql3= 'del ' + @tempfilename + ''
+
+exec xp_cmdshell @sql3
+
+set @sql3= 'del ' + @catfilename + ''
+
+exec xp_cmdshell @sql3
+
+GOTO THEEND
+
+THEEND:
+
+END
+
+
+
